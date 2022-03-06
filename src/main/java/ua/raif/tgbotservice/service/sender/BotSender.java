@@ -5,6 +5,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.telegram.telegrambots.bots.DefaultAbsSender;
 import org.telegram.telegrambots.bots.DefaultBotOptions;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import ua.raif.tgbotservice.config.TgBotProperties;
 
 import java.util.ArrayList;
@@ -38,7 +41,37 @@ public class BotSender extends DefaultAbsSender implements IBotSender {
         var collect = users.stream()
                 .map(m -> "@" + m)
                 .collect(Collectors.joining(","));
-        var message = new SendMessage(prop.getChatId(), "Please you need verify in @" + prop.getName() + ": " + collect);
+        var message = new SendMessage(prop.getChatId(), "Hi, please start in @" + prop.getName() + ": " + collect);
+        this.execute(message);
+    }
+
+    @SneakyThrows
+    @Override
+    public void sendRequestForContact(Long userId) {
+        var message = new SendMessage(String.valueOf(userId), "Please share you phone number");
+
+        // create keyboard
+        var replyKeyboardMarkup = new ReplyKeyboardMarkup();
+        message.setReplyMarkup(replyKeyboardMarkup);
+        replyKeyboardMarkup.setSelective(true);
+        replyKeyboardMarkup.setResizeKeyboard(true);
+        replyKeyboardMarkup.setOneTimeKeyboard(true);
+
+        // new list
+        List<KeyboardRow> keyboard = new ArrayList<>();
+
+        // first keyboard line
+        var keyboardFirstRow = new KeyboardRow();
+        var keyboardButton = new KeyboardButton();
+        keyboardButton.setText("Share your phone number >");
+        keyboardButton.setRequestContact(true);
+        keyboardFirstRow.add(keyboardButton);
+
+        // add array to list
+        keyboard.add(keyboardFirstRow);
+
+        // add list to our keyboard
+        replyKeyboardMarkup.setKeyboard(keyboard);
         this.execute(message);
     }
 }

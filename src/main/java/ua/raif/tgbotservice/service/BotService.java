@@ -1,5 +1,6 @@
 package ua.raif.tgbotservice.service;
 
+import lombok.NonNull;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +16,8 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.Keyboard
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ua.raif.tgbotservice.config.TgBotProperties;
+import ua.raif.tgbotservice.dao.UsersTelegramRepository;
+import ua.raif.tgbotservice.domain.UsersTelegram;
 import ua.raif.tgbotservice.service.sender.IBotSender;
 
 import java.util.ArrayList;
@@ -31,6 +34,9 @@ public class BotService extends TelegramLongPollingBot {
 
     @Autowired
     private IBotSender botSender;
+
+    @Autowired
+    private UsersTelegramRepository dao;
 
     @Override
     public String getBotUsername() {
@@ -56,72 +62,70 @@ public class BotService extends TelegramLongPollingBot {
 //                            var ci = checkableUserRepository.findById(c.getId());
 //                            return ci.isEmpty() || Objects.isNull(ci.get().isVerified());
 //                        })
-                        .map(User::getUserName)
+                        .map(this::mappingUserName)
                         .collect(Collectors.toList());
                 botSender.sendHelloMessageToChatForVerify(missed);
             }
 
-            if(isNewAction(updateMessage)){
+            if(isStartPrivateChat(updateMessage)){
+                @NonNull var charId = updateMessage.getMessage().getChat().getId();
+                @NonNull var userId = updateMessage.getMessage().getFrom().getId();
+                botSender.sendRequestForContact(userId);
+            }
 
-                var user = getUser(updateMessage);
-                // checkValidUser DB
-                var message = sendMessageGetContact(updateMessage);
+            if(isMessageWithContact(updateMessage)) {
 
-                this.execute(message);
-            } else if (isMessageWithContact(updateMessage)) {
                 var userId = updateMessage.getMessage().getContact().getUserId();
+                var userName = updateMessage.getMessage().getContact().getFirstName();
+
                 var phoneNumber = updateMessage.getMessage().getContact().getPhoneNumber();
                 // validate phone number
-                var isValidPhone = false;
-                if (isValidPhone) {
-                    // set user valid DB
-                }else{
-                    //set to ban list
-                    var banChatMember = new BanChatMember();
-                    long chatId = -1001522161362L;
-                    banChatMember.setChatId(String.valueOf(chatId));
-                    banChatMember.setRevokeMessages(true);
-                    banChatMember.setUserId(userId);
-                    this.execute(banChatMember);
-                }
+                var user = new UsersTelegram();
+                user.setPhoneNumber(phoneNumber);
+                user.setUserName(userName);
+                user.setUserId(userId);
+                user.setVerified(Boolean.TRUE);
+                dao.save(user);
+//                var isValidPhone = false;
+//                if (isValidPhone) {
+//                    // set user valid DB
+//                }else{
+//                    //set to ban list
+//                    var banChatMember = new BanChatMember();
+//                    long chatId = -1001522161362L;
+//                    banChatMember.setChatId(String.valueOf(chatId));
+//                    banChatMember.setRevokeMessages(true);
+//                    banChatMember.setUserId(userId);
+//                    this.execute(banChatMember);
+//                }
             }
         }
     }
 
+    private boolean isStartPrivateChat(Update updateMessage) {
+        @NonNull var typeChat = updateMessage.getMessage().getChat().getType();
+        var text = updateMessage.getMessage().getText();
+        if (Objects.nonNull(text) && text.equals("/start") && typeChat.equals("private")) {
+            return true;
+        }
+        return false;
+    }
+
+    private String mappingUserName(User m) {
+        if (m.getUserName() != null) {
+            return m.getUserName();
+        }
+
+        return m.getFirstName() + " " + m.getLastName();
+    }
+
     private boolean isNewUsersAdded(Update updateMessage) {
-        return Objects.nonNull(updateMessage.getMessage().getNewChatMembers());
+        return Objects.nonNull(updateMessage.getMessage().getNewChatMembers()) &&
+                updateMessage.getMessage().getNewChatMembers().size() > 0;
     }
 
     private boolean isMessageWithContact(Update updateMessage) {
         return Objects.nonNull(updateMessage.getMessage().getContact());
-    }
-
-    private SendMessage sendMessageGetContact(Update updateMessage) {
-        var message = new SendMessage(String.valueOf(updateMessage.getMessage().getFrom().getId()), "Please share you phone number");
-
-        // create keyboard
-        var replyKeyboardMarkup = new ReplyKeyboardMarkup();
-        message.setReplyMarkup(replyKeyboardMarkup);
-        replyKeyboardMarkup.setSelective(true);
-        replyKeyboardMarkup.setResizeKeyboard(true);
-        replyKeyboardMarkup.setOneTimeKeyboard(true);
-
-        // new list
-        List<KeyboardRow> keyboard = new ArrayList<>();
-
-        // first keyboard line
-        var keyboardFirstRow = new KeyboardRow();
-        var keyboardButton = new KeyboardButton();
-        keyboardButton.setText("Share your phone number >");
-        keyboardButton.setRequestContact(true);
-        keyboardFirstRow.add(keyboardButton);
-
-        // add array to list
-        keyboard.add(keyboardFirstRow);
-
-        // add list to our keyboard
-        replyKeyboardMarkup.setKeyboard(keyboard);
-        return message;
     }
 
     private User getUser(Update updateMessage) {

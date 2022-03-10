@@ -13,5 +13,5 @@ public class TgBotProperties {
 
     private String token;
 
-    private final String chatId = "-1001522161362L";
+    private final String chatId = "-1001522161362";
 }

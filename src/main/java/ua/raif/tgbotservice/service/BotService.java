@@ -7,22 +7,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
-import org.telegram.telegrambots.meta.api.methods.groupadministration.BanChatMember;
-import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.User;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
-import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ua.raif.tgbotservice.config.TgBotProperties;
+import ua.raif.tgbotservice.dao.PhonesUserRepository;
 import ua.raif.tgbotservice.dao.UsersTelegramRepository;
 import ua.raif.tgbotservice.domain.UsersTelegram;
+import ua.raif.tgbotservice.exception.NonValidUserException;
+import ua.raif.tgbotservice.exception.NotFoundUserBotException;
 import ua.raif.tgbotservice.service.sender.IBotSender;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -37,6 +32,9 @@ public class BotService extends TelegramLongPollingBot {
 
     @Autowired
     private UsersTelegramRepository dao;
+
+    @Autowired
+    private PhonesUserRepository daoPhones;
 
     @Override
     public String getBotUsername() {
@@ -53,10 +51,11 @@ public class BotService extends TelegramLongPollingBot {
     public void onUpdateReceived(Update updateMessage) {
         if (updateMessage.hasMessage()) {
 
-            if(isNewUsersAdded(updateMessage)){
-                var missed = updateMessage.getMessage().getNewChatMembers()
+            if (isNewUsersAdded(updateMessage)) {
+                var listUsers = updateMessage.getMessage().getNewChatMembers()
                         .stream()
                         .filter(c -> !c.getIsBot())
+                        .map(this::createNewUser)
                         //.filter(c -> !checkableUserRepository.existsById(c.getId()))
 //                        .filter(c -> {
 //                            var ci = checkableUserRepository.findById(c.getId());
@@ -64,42 +63,92 @@ public class BotService extends TelegramLongPollingBot {
 //                        })
                         .map(this::mappingUserName)
                         .collect(Collectors.toList());
-                botSender.sendHelloMessageToChatForVerify(missed);
+                botSender.sendHelloMessageToChatForVerify(listUsers);
             }
 
-            if(isStartPrivateChat(updateMessage)){
+            if (isStartPrivateChat(updateMessage)) {
                 @NonNull var charId = updateMessage.getMessage().getChat().getId();
                 @NonNull var userId = updateMessage.getMessage().getFrom().getId();
                 botSender.sendRequestForContact(userId);
             }
 
-            if(isMessageWithContact(updateMessage)) {
+            if (isMessageWithContact(updateMessage)) {
+                try {
+                    var userId = updateMessage.getMessage().getContact().getUserId();
+                    var phoneNumber = updateMessage.getMessage().getContact().getPhoneNumber();
+                    // validate phone number
+                    validatePhoneNumber(phoneNumber, userId);
+                    botSender.sendSuccessValidationMessage(userId);
+                } catch (NonValidUserException ex) {
+                    var userId = updateMessage.getMessage().getContact().getUserId();
+                    removeAllMessage(userId);
+                    botSender.sendNonValidPhoneMessage(userId);
+                    botSender.bannedUserInChat(userId);
+                }
+            }
 
-                var userId = updateMessage.getMessage().getContact().getUserId();
-                var userName = updateMessage.getMessage().getContact().getFirstName();
+            if (isNewAction(updateMessage)) {
+                var user = updateMessage.getMessage().getFrom();
+                var isVerified = dao.existsByUserIdAndIsVerified(String.valueOf(user.getId()), true);
+                if (!isVerified) {
+                    var byUserId = dao.findByUserId(String.valueOf(user.getId()));
 
-                var phoneNumber = updateMessage.getMessage().getContact().getPhoneNumber();
-                // validate phone number
-                var user = new UsersTelegram();
-                user.setPhoneNumber(phoneNumber);
-                user.setUserName(userName);
-                user.setUserId(userId);
-                user.setVerified(Boolean.TRUE);
-                dao.save(user);
-//                var isValidPhone = false;
-//                if (isValidPhone) {
-//                    // set user valid DB
-//                }else{
-//                    //set to ban list
-//                    var banChatMember = new BanChatMember();
-//                    long chatId = -1001522161362L;
-//                    banChatMember.setChatId(String.valueOf(chatId));
-//                    banChatMember.setRevokeMessages(true);
-//                    banChatMember.setUserId(userId);
-//                    this.execute(banChatMember);
-//                }
+                    byUserId.map(u -> {
+                        var messages = u.getMessages();
+                        if (Objects.isNull(messages)) {
+                            var initMessage = new ArrayList<String>();
+                            initMessage.add(String.valueOf(updateMessage.getMessage().getMessageId()));
+                            u.setMessages(initMessage);
+                        } else {
+                            messages.add(String.valueOf(updateMessage.getMessage().getMessageId()));
+                        }
+                        return dao.save(u);
+                    }).orElseGet(() -> createNewUserMessage(user, String.valueOf(updateMessage.getMessage().getMessageId())));
+                }
             }
         }
+    }
+
+    private void removeAllMessage(Long userId) {
+        var byUserId = dao.findByUserId(String.valueOf(userId));
+        var messages = byUserId.map(UsersTelegram::getMessages).orElseGet(Collections::emptyList);
+        botSender.removeAllMessagesForNonValidUser(userId, messages);
+    }
+
+    private UsersTelegram createNewUserMessage(User m, String message) {
+        UsersTelegram usersTelegram = getUsersTelegram(m);
+        usersTelegram.setMessages(List.of(message));
+        return dao.save(usersTelegram);
+    }
+
+    private User createNewUser(User m) {
+        UsersTelegram usersTelegram = getUsersTelegram(m);
+        dao.save(usersTelegram);
+        return m;
+    }
+
+    private UsersTelegram getUsersTelegram(User m) {
+        var usersTelegram = new UsersTelegram();
+        usersTelegram.setUserId(m.getId());
+        usersTelegram.setVerified(Boolean.FALSE);
+        usersTelegram.setUserName(m.getUserName());
+        usersTelegram.setFirstName(m.getFirstName());
+        usersTelegram.setLastName(m.getLastName());
+        return usersTelegram;
+    }
+
+    private void validatePhoneNumber(String phoneNumber, Long userId) {
+        var userByPhones = daoPhones.findByPhone(phoneNumber);
+        userByPhones.ifPresentOrElse(e -> {
+            var byUserId = dao.findByUserId(String.valueOf(userId));
+            byUserId.map(u -> {
+                u.setPhoneNumber(phoneNumber);
+                u.setVerified(Boolean.TRUE);
+                return dao.save(u);
+            }).orElseThrow(() -> new NotFoundUserBotException("" + userId));
+        }, () -> {
+            throw new NonValidUserException("Not found User with phone: " + phoneNumber);
+        });
     }
 
     private boolean isStartPrivateChat(Update updateMessage) {
@@ -126,10 +175,6 @@ public class BotService extends TelegramLongPollingBot {
 
     private boolean isMessageWithContact(Update updateMessage) {
         return Objects.nonNull(updateMessage.getMessage().getContact());
-    }
-
-    private User getUser(Update updateMessage) {
-        return updateMessage.getMessage().getFrom();
     }
 
     private boolean isNewAction(Update updateMessage) {
